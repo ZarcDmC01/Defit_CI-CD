@@ -54,7 +54,7 @@ def process_file(file, task: str, question: str) -> tuple[str, str]:
 
 
 # ---- UI Layout ----
-with gr.Blocks(title="AI File Processor", theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="AI File Processor") as demo:
     gr.Markdown("# AI File Processing Pipeline")
     gr.Markdown(
         "Upload a **TXT** or **PDF** file (max 5 MB), choose an AI task, and get insights."
@@ -102,4 +102,4 @@ with gr.Blocks(title="AI File Processor", theme=gr.themes.Soft()) as demo:
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 7860))
-    demo.launch(server_name="0.0.0.0", server_port=port, share=False)
+    demo.launch(server_name="0.0.0.0", server_port=port, share=False, theme=gr.themes.Soft())
