@@ -14,4 +14,5 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 7860
 
-CMD ["python", "ui/gradio_app.py"]
+# $PORT est injecté par Render en production; fallback 7860 pour local/Docker Compose
+CMD ["sh", "-c", "PORT=${PORT:-7860} python ui/gradio_app.py"]

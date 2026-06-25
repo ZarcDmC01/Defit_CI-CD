@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: defit-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile.api
+    dockerContext: .
+    branch: main
+    autoDeploy: true
+    envVars:
+      - key: INFERENCE_ENGINE
+        value: mock
+
+  - type: web
+    name: defit-ui
+    runtime: docker
+    dockerfilePath: ./Dockerfile.ui
+    dockerContext: .
+    branch: main
+    autoDeploy: true
+    envVars:
+      - key: API_BASE
+        value: https://defit-api.onrender.com
