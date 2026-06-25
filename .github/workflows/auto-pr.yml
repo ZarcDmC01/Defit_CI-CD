@@ -1,0 +1,28 @@
+name: Auto PR
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [Jesse, Simo, Matthieu]
+
+jobs:
+  open-pr:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ouvrir la PR automatiquement
+        run: |
+          gh pr create \
+            --title "Merge ${{ github.ref_name }} → main" \
+            --body "CI verte, prêt à merger" \
+            --base main \
+            --head ${{ github.ref_name }} \
+            --repo ${{ github.repository }} || echo "PR déjà existante"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

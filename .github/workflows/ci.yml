@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main, Jesse, Simo, Matthieu]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances (sans torch pour la rapidité)
+        run: pip install -r requirements.ci.txt
+
+      - name: Vérifier la syntaxe Python
+        run: |
+          find . -name "*.py" \
+            -not -path "./.github/*" \
+            -not -path "./venv/*" \
+            -exec python -m py_compile {} \;
+
+      - name: Vérifier les imports critiques (moteur mock)
+        env:
+          INFERENCE_ENGINE: mock
+        run: |
+          python -c "
+          from config import settings
+          from storage.job_store import job_store, JobStatus
+          from processing.validator import ValidationError
+          from processing.preprocessor import extract_text
+          from processing.inference.mock_engine import MockEngine
+          from services.job_service import create_job, get_job
+          from api.schemas import UploadResponse, JobResult
+          e = MockEngine()
+          assert 'MOCK' in e.summarize('hello world test')
+          print('Tous les imports et le moteur mock : OK')
+          "
+
+      - name: Test pipeline complet (mock)
+        env:
+          INFERENCE_ENGINE: mock
+        run: |
+          python -c "
+          from services.job_service import create_job, mark_completed, get_job
+          from storage.job_store import JobStatus
+          job = create_job('summarize')
+          assert job.status == JobStatus.PENDING
+          mark_completed(job.job_id, 'résultat test')
+          j = get_job(job.job_id)
+          assert j.status == JobStatus.COMPLETED
+          assert j.result == 'résultat test'
+          print('Pipeline de jobs : OK')
+          "
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: check
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image API
+        run: docker build -f Dockerfile.api -t defit-api:ci .
+
+      - name: Build image UI
+        run: docker build -f Dockerfile.ui -t defit-ui:ci .

@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.ui.txt .
+RUN pip install --no-cache-dir -r requirements.ui.txt
+
+COPY ui/ ui/
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    # Default; overridden by docker-compose
+    API_BASE=http://api:8000
+
+EXPOSE 7860
+
+CMD ["python", "ui/gradio_app.py"]

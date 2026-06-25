@@ -1,0 +1,41 @@
+services:
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: defit-api:latest
+    container_name: defit_api
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      # Persist downloaded HuggingFace models between runs
+      - hf_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    image: defit-ui:latest
+    container_name: defit_ui
+    ports:
+      - "7860:7860"
+    environment:
+      - API_BASE=http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  hf_cache:
+    driver: local

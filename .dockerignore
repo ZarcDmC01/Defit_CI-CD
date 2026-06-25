@@ -1,0 +1,34 @@
+# Python runtime artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Local virtual environment
+venv/
+.venv/
+env/
+
+# Secrets & local config (injected via env_file in compose)
+.env
+*.env.local
+
+# HuggingFace model cache (managed via Docker volume)
+.cache/
+
+# Dev/IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Git
+.git/
+.gitignore
+
+# Project-specific
+contexte/
+architecture.md
