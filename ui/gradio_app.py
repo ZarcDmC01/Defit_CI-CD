@@ -4,8 +4,9 @@ import time
 import httpx
 import gradio as gr
 
-# In Docker the UI container reaches the API via service name; locally use localhost
-API_BASE = os.getenv("API_BASE", "http://127.0.0.1:8000")
+# Quand monté dans FastAPI (même process), on appelle localhost sur le même port
+_port = os.getenv("PORT", "8000")
+API_BASE = os.getenv("API_BASE", f"http://localhost:{_port}")
 POLL_INTERVAL = 2  # seconds
 
 

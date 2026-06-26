@@ -1,9 +1,9 @@
 from __future__ import annotations
-import asyncio
 from typing import Annotated, Optional
 
+import gradio as gr
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import RedirectResponse
 
 from api.schemas import AITask, ErrorResponse, JobResult, UploadResponse
 from processing.validator import ValidationError, validate_file
@@ -80,3 +80,13 @@ def get_result(job_id: str):
 @app.get("/health", include_in_schema=False)
 def health():
     return {"status": "ok"}
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse(url="/ui")
+
+
+# Mount Gradio UI at /ui — same process, same port, no cross-service calls
+from ui.gradio_app import demo as gradio_demo  # noqa: E402
+app = gr.mount_gradio_app(app, gradio_demo, path="/ui")

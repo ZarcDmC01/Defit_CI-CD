@@ -13,12 +13,13 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
  && pip install --no-cache-dir -r requirements.txt
 
 # Copy source
-COPY api/       api/
-COPY services/  services/
+COPY api/        api/
+COPY services/   services/
 COPY processing/ processing/
-COPY storage/   storage/
-COPY config.py  .
-COPY main.py    .
+COPY storage/    storage/
+COPY ui/         ui/
+COPY config.py   .
+COPY main.py     .
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
