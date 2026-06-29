@@ -27,6 +27,11 @@ avec toutes les commandes exécutées et les décisions techniques prises.
 18. [Déploiement sur Render](#18-déploiement-sur-render)
 19. [Correctifs post-déploiement](#19-correctifs-post-déploiement)
 20. [Résultat final](#20-résultat-final)
+21. [Fusion API + UI en service unique](#21-fusion-api--ui-en-service-unique)
+22. [Intégration MongoDB](#22-intégration-mongodb)
+23. [Nouvelles routes /jobs](#23-nouvelles-routes-jobs)
+24. [MongoDB Atlas — déploiement cloud](#24-mongodb-atlas--déploiement-cloud)
+25. [Diagrammes de séquence](#25-diagrammes-de-séquence)
 
 ---
 
@@ -1472,3 +1477,325 @@ INFERENCE_ENGINE=huggingface
 
 Premier lancement : téléchargement des modèles (~1.3 GB, mis en cache dans le volume `hf_cache`).
 Les lancements suivants utilisent le cache.
+
+---
+
+## 21. Fusion API + UI en service unique
+
+### Contexte
+
+Render free tier limite à 1 service actif. L'architecture deux services (API + UI séparés) était impossible à maintenir gratuitement. Solution : monter Gradio directement dans FastAPI via `gr.mount_gradio_app`.
+
+### Changements apportés
+
+**`api/main.py`** — ajout du montage Gradio :
+```python
+from ui.gradio_app import demo as gradio_demo
+app = gr.mount_gradio_app(app, gradio_demo, path="/ui")
+```
+
+**`ui/gradio_app.py`** — URL dynamique selon le contexte :
+```python
+_port = os.getenv("PORT", "8000")
+API_BASE = os.getenv("API_BASE", f"http://localhost:{_port}")
+```
+
+**`render.yaml`** — simplifié à un seul service :
+```yaml
+services:
+  - type: web
+    name: defit-app
+    runtime: docker
+    dockerfilePath: ./Dockerfile.api
+    dockerContext: .
+    branch: main
+    autoDeploy: true
+    envVars:
+      - key: INFERENCE_ENGINE
+        value: mock
+```
+
+**Résultat :** L'app tourne sur un seul port (`8000`), Gradio est accessible sur `/ui`, l'API sur `/upload`, `/result`, etc.
+
+---
+
+## 22. Intégration MongoDB
+
+### Contexte
+
+Le `JobStore` en mémoire perdait toutes les données à chaque redémarrage de Render. Objectif : persister les jobs dans MongoDB avec un fallback automatique en in-memory si MongoDB n'est pas configuré.
+
+### Décisions techniques
+
+| Décision | Justification |
+|---|---|
+| `motor` (driver async) | Natif asyncio — s'intègre sans friction avec FastAPI |
+| `active_store` global remplaçable | Permet le swap in-memory ↔ MongoDB au démarrage sans modifier les services |
+| Fallback in-memory | Si `MONGODB_URL` absent → `InMemoryJobStore`, l'app démarre quand même |
+| Indexes MongoDB | `job_id` (unique), `status`, `created_at` (desc) — performances des requêtes |
+
+### Champs ajoutés à l'entité `Job`
+
+```python
+@dataclass
+class Job:
+    job_id:     str
+    task:       str
+    status:     JobStatus = JobStatus.PENDING
+    result:     Optional[str] = None
+    error:      Optional[str] = None
+    filename:   Optional[str] = None   # nouveau — nom du fichier uploadé
+    question:   Optional[str] = None   # nouveau — question pour les tâches QA
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+```
+
+### Fichiers créés/modifiés
+
+**`storage/job_store.py`** — `JobStore` renommé `InMemoryJobStore`, méthodes rendues async, `active_store` global :
+```python
+active_store: InMemoryJobStore = InMemoryJobStore()
+```
+
+**`storage/mongo_store.py`** — nouveau store MongoDB async :
+```python
+class MongoJobStore:
+    async def connect(self) -> None: ...     # crée indexes
+    async def create(self, task, filename, question) -> Job: ...
+    async def get(self, job_id) -> Optional[Job]: ...
+    async def update(self, job_id, **kwargs) -> Optional[Job]: ...
+    async def list_jobs(self, status, task, limit, skip) -> list[Job]: ...
+    async def get_stats(self) -> dict: ...
+    async def delete(self, job_id) -> bool: ...
+```
+
+**`services/job_service.py`** — toutes les fonctions deviennent async, nouvelles fonctions ajoutées :
+```python
+async def create_job(task, filename="", question="") -> Job: ...
+async def get_job(job_id) -> Optional[Job]: ...
+async def mark_running(job_id) -> None: ...
+async def mark_completed(job_id, result) -> None: ...
+async def mark_failed(job_id, error) -> None: ...
+async def list_jobs(status, task, limit, skip) -> list[Job]: ...
+async def get_stats() -> dict: ...
+async def delete_job(job_id) -> bool: ...
+```
+
+**`services/pipeline_service.py`** — `await` ajouté sur les appels job_service :
+```python
+await job_service.mark_running(job_id)
+await job_service.mark_completed(job_id, result)
+await job_service.mark_failed(job_id, error)
+```
+
+**`api/main.py`** — lifespan pour initialiser MongoDB au démarrage :
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from config import settings
+    import storage.job_store as store_module
+
+    if settings.mongodb_url:
+        from storage.mongo_store import MongoJobStore
+        store = MongoJobStore(settings.mongodb_url, settings.mongodb_db_name)
+        await store.connect()
+        store_module.active_store = store
+
+    yield
+
+    if hasattr(store_module.active_store, "close"):
+        store_module.active_store.close()
+```
+
+**`config.py`** — nouvelles variables :
+```python
+mongodb_url:     Optional[str] = None
+mongodb_db_name: str = "defit"
+```
+
+**`requirements.txt`** — ajout :
+```
+motor>=3.3.0
+```
+
+**`.env`** — ajout :
+```env
+MONGODB_URL=mongodb://localhost:27017
+MONGODB_DB_NAME=defit
+```
+
+### `docker-compose.yml` — service MongoDB + mongo-express
+
+```yaml
+services:
+
+  mongodb:
+    image: mongo:7
+    container_name: defit_mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: defit
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  mongo-express:
+    image: mongo-express:1
+    container_name: defit_mongo_express
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongodb
+      ME_CONFIG_BASICAUTH: false
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  app:
+    environment:
+      MONGODB_URL: mongodb://mongodb:27017
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    # ...
+
+volumes:
+  mongo_data:
+    driver: local
+```
+
+**Note :** `docker-compose.yml` est utilisé uniquement en local. Sur Render, seul `Dockerfile.api` est utilisé — MongoDB doit être externe (Atlas).
+
+---
+
+## 23. Nouvelles routes /jobs
+
+### Fichiers créés
+
+**`api/routes/__init__.py`** — package vide
+
+**`api/routes/jobs.py`** — 3 nouvelles routes :
+
+```python
+router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+@router.get("")                    # GET /jobs?status=COMPLETED&task=qa&limit=50&skip=0
+@router.get("/stats")              # GET /jobs/stats
+@router.delete("/{job_id}")        # DELETE /jobs/{job_id}  → 204
+```
+
+**`api/schemas.py`** — nouveaux schémas :
+```python
+class JobResult(BaseModel):
+    job_id:   str
+    status:   JobStatus
+    task:     str
+    result:   Optional[str] = None
+    error:    Optional[str] = None
+    filename: Optional[str] = None   # nouveau
+    question: Optional[str] = None   # nouveau
+
+class JobListResponse(BaseModel):
+    jobs:  List[JobResult]
+    total: int
+
+class JobStats(BaseModel):
+    by_status: Dict[str, int]
+    by_task:   Dict[str, int]
+    total:     int
+```
+
+### Exemple de réponse `GET /jobs/stats`
+
+```json
+{
+  "by_status": { "COMPLETED": 12, "FAILED": 2, "PENDING": 1 },
+  "by_task":   { "summarize": 8, "qa": 4, "keywords": 3 },
+  "total": 15
+}
+```
+
+---
+
+## 24. MongoDB Atlas — déploiement cloud
+
+### Contexte
+
+Render n'a pas de service MongoDB natif. MongoDB Atlas (free tier M0) est utilisé comme base cloud externe.
+
+### Étapes de configuration
+
+1. **Création du cluster** sur mongodb.com/atlas → tier M0 gratuit, cluster nommé `Defit`
+2. **Network Access** → `0.0.0.0/0` ajouté (Render a des IPs dynamiques)
+3. **Database Access** → user `jessesteven26_db_user` créé avec rôle `atlasAdmin`
+4. **Connection string** récupéré via **Connect → Drivers** :
+   ```
+   mongodb+srv://jessesteven26_db_user:<password>@defit.uoinz2k.mongodb.net/?appName=Defit
+   ```
+5. **Render → Environment** → `MONGODB_URL` ajouté avec l'URL complète (mot de passe inclus)
+
+### `render.yaml` mis à jour
+
+```yaml
+envVars:
+  - key: INFERENCE_ENGINE
+    value: mock
+  - key: MONGODB_DB_NAME
+    value: defit
+  - key: MONGODB_URL
+    sync: false   # secret — à saisir manuellement dans le dashboard Render
+```
+
+### Résultat
+
+- Les jobs sont persistés dans Atlas à chaque upload
+- Les données survivent aux redémarrages et redéploiements Render
+- Visualisation via **Atlas → Browse Collections → defit → jobs**
+
+### Structure d'un document `jobs`
+
+```json
+{
+  "_id":        "ObjectId('6a424146b5b328cf7c04a19e')",
+  "job_id":     "908d6793-7753-454b-9542-004997643889",
+  "task":       "qa",
+  "status":     "COMPLETED",
+  "result":     "[MOCK] Answer to '': ...",
+  "error":      null,
+  "filename":   "requirements.txt",
+  "question":   null,
+  "created_at": "2026-06-29T09:56:22.576+00:00",
+  "updated_at": "2026-06-29T09:56:23.266+00:00"
+}
+```
+
+---
+
+## 25. Diagrammes de séquence
+
+### Fichiers créés
+
+| Fichier | Contenu |
+|---|---|
+| `diagram.html` | Version HTML interactive avec onglets (Mermaid.js CDN) |
+| `docs/sequence_upload_pipeline.md` | Flux upload + pipeline background |
+| `docs/sequence_poll_resultat.md` | Flux polling + affichage résultat |
+| `docs/sequence_routes_jobs.md` | Flux routes /jobs (list, stats, delete) |
+
+### Participants du diagramme principal
+
+```
+Utilisateur → Gradio UI → FastAPI → Validator
+                                  → JobService → MongoDB Atlas
+                                  → PipelineService (background)
+                                       → extract_text (thread pool)
+                                       → InferenceEngine (thread pool)
+```
