@@ -1,4 +1,5 @@
 from __future__ import annotations
+from contextlib import asynccontextmanager
 from typing import Annotated, Optional
 
 import gradio as gr
@@ -6,16 +7,38 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadF
 from fastapi.responses import RedirectResponse
 
 from api.schemas import AITask, ErrorResponse, JobResult, UploadResponse
+from api.routes.jobs import router as jobs_router
 from processing.validator import ValidationError, validate_file
 from services import job_service
 from services.pipeline_service import run_pipeline
 from storage.job_store import JobStatus
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from config import settings
+    import storage.job_store as store_module
+
+    if settings.mongodb_url:
+        from storage.mongo_store import MongoJobStore
+        store = MongoJobStore(settings.mongodb_url, settings.mongodb_db_name)
+        await store.connect()
+        store_module.active_store = store
+
+    yield
+
+    if hasattr(store_module.active_store, "close"):
+        store_module.active_store.close()
+
+
 app = FastAPI(
     title="AI File Processing Pipeline",
     description="Upload TXT/PDF files and run asynchronous AI analysis.",
     version="1.0.0",
+    lifespan=lifespan,
 )
+
+app.include_router(jobs_router)
 
 
 @app.post(
@@ -31,16 +54,16 @@ async def upload_file(
     task: Annotated[AITask, Form()] = "summarize",
     question: Annotated[Optional[str], Form()] = "",
 ):
-    """
-    Accept a file, validate it, create a job, and kick off background processing.
-    Returns immediately with a job ID — no blocking inference on this endpoint.
-    """
     try:
         content = await validate_file(file)
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    job = job_service.create_job(task)
+    job = await job_service.create_job(
+        task,
+        filename=file.filename or "",
+        question=question or "",
+    )
 
     background_tasks.add_task(
         run_pipeline,
@@ -64,8 +87,8 @@ async def upload_file(
     responses={404: {"model": ErrorResponse}},
     summary="Poll job status and retrieve AI output",
 )
-def get_result(job_id: str):
-    job = job_service.get_job(job_id)
+async def get_result(job_id: str):
+    job = await job_service.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
     return JobResult(
@@ -74,6 +97,8 @@ def get_result(job_id: str):
         task=job.task,
         result=job.result,
         error=job.error,
+        filename=job.filename,
+        question=job.question,
     )
 
 
@@ -87,6 +112,6 @@ def root():
     return RedirectResponse(url="/ui")
 
 
-# Mount Gradio UI at /ui — same process, same port, no cross-service calls
+# Mount Gradio UI at /ui — same process, same port
 from ui.gradio_app import demo as gradio_demo  # noqa: E402
 app = gr.mount_gradio_app(app, gradio_demo, path="/ui")

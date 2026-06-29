@@ -1,5 +1,22 @@
 services:
 
+  mongodb:
+    image: mongo:7
+    container_name: defit_mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: defit
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   app:
     build:
       context: .
@@ -9,8 +26,13 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
+    environment:
+      MONGODB_URL: mongodb://mongodb:27017
     volumes:
       - hf_cache:/root/.cache/huggingface
+    depends_on:
+      mongodb:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -22,4 +44,6 @@ services:
 
 volumes:
   hf_cache:
+    driver: local
+  mongo_data:
     driver: local

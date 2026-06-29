@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Literal
+from typing import Literal, Optional
 from pydantic_settings import BaseSettings
 
 
@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     summarization_model: str = "sshleifer/distilbart-cnn-12-6"
     sentiment_model: str = "distilbert-base-uncased-finetuned-sst-2-english"
     qa_model: str = "deepset/minilm-uncased-squad2"
+    # MongoDB — set MONGODB_URL to enable persistence (omit to fall back to in-memory)
+    mongodb_url: Optional[str] = None
+    mongodb_db_name: str = "defit"
 
     model_config = {"env_file": ".env"}
 
