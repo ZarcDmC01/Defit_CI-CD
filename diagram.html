@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Defit IA — Diagramme de séquence</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 1.6rem;
+      font-weight: 600;
+      margin-bottom: 0.4rem;
+      color: #f8fafc;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #64748b;
+      font-size: 0.9rem;
+      margin-bottom: 2.5rem;
+    }
+
+    .tabs {
+      display: flex;
+      justify-content: center;
+      gap: 0.5rem;
+      margin-bottom: 2rem;
+    }
+
+    .tab {
+      padding: 0.5rem 1.4rem;
+      border-radius: 6px;
+      border: 1px solid #334155;
+      background: #1e293b;
+      color: #94a3b8;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: all 0.2s;
+    }
+
+    .tab.active, .tab:hover {
+      background: #3b82f6;
+      border-color: #3b82f6;
+      color: #fff;
+    }
+
+    .diagram-wrapper {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 2rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .diagram { display: none; }
+    .diagram.active { display: block; }
+
+    .mermaid {
+      display: flex;
+      justify-content: center;
+    }
+
+    .legend {
+      display: flex;
+      justify-content: center;
+      gap: 1.5rem;
+      margin-top: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.78rem;
+      color: #94a3b8;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Defit IA — Diagramme de séquence</h1>
+  <p class="subtitle">Architecture FastAPI + MongoDB Atlas + Gradio</p>
+
+  <div class="tabs">
+    <button class="tab active" onclick="show('upload')">Upload & Pipeline</button>
+    <button class="tab" onclick="show('poll')">Poll & Résultat</button>
+    <button class="tab" onclick="show('jobs')">Routes /jobs</button>
+  </div>
+
+  <div class="diagram-wrapper">
+
+    <!-- TAB 1 : Upload & Pipeline -->
+    <div class="diagram active" id="upload">
+      <div class="mermaid">
+sequenceDiagram
+    actor User as 👤 Utilisateur
+    participant UI as Gradio UI<br/>/ui
+    participant API as FastAPI
+    participant Val as Validator
+    participant JS as JobService
+    participant DB as MongoDB Atlas
+    participant PS as PipelineService
+    participant AI as InferenceEngine
+
+    User->>UI: Upload fichier + tâche
+    UI->>API: POST /upload<br/>(file, task, question)
+    API->>Val: validate_file()
+    Val-->>API: ✓ bytes (ext, taille, non-vide)
+    API->>JS: create_job(task, filename, question)
+    JS->>DB: insert { job_id, status: PENDING }
+    DB-->>JS: OK
+    JS-->>API: Job(job_id)
+    API-->>UI: 202 { job_id }
+
+    Note over API,PS: BackgroundTask — non bloquant
+
+    API-)PS: run_pipeline(job_id, content, task)
+    PS->>JS: mark_running(job_id)
+    JS->>DB: update status=RUNNING
+
+    PS->>PS: extract_text() — thread pool
+    PS->>AI: engine().run(task, text, question)<br/>thread pool
+
+    alt Succès
+        AI-->>PS: résultat IA
+        PS->>JS: mark_completed(job_id, result)
+        JS->>DB: update status=COMPLETED
+    else Erreur
+        PS->>JS: mark_failed(job_id, error)
+        JS->>DB: update status=FAILED
+    end
+      </div>
+    </div>
+
+    <!-- TAB 2 : Poll -->
+    <div class="diagram" id="poll">
+      <div class="mermaid">
+sequenceDiagram
+    actor User as 👤 Utilisateur
+    participant UI as Gradio UI<br/>/ui
+    participant API as FastAPI
+    participant JS as JobService
+    participant DB as MongoDB Atlas
+
+    loop Toutes les 2 secondes
+        UI->>API: GET /result/{job_id}
+        API->>JS: get_job(job_id)
+        JS->>DB: find_one({ job_id })
+        DB-->>JS: document
+        JS-->>API: Job
+
+        alt PENDING ou RUNNING
+            API-->>UI: { status: RUNNING }
+            Note over UI: Continue de poller...
+        else COMPLETED
+            API-->>UI: { status: COMPLETED, result: "..." }
+            UI-->>User: Affiche le résultat IA
+        else FAILED
+            API-->>UI: { status: FAILED, error: "..." }
+            UI-->>User: Affiche l'erreur
+        end
+    end
+      </div>
+    </div>
+
+    <!-- TAB 3 : Jobs routes -->
+    <div class="diagram" id="jobs">
+      <div class="mermaid">
+sequenceDiagram
+    actor Dev as 👨‍💻 Dev / Admin
+    participant API as FastAPI
+    participant JS as JobService
+    participant DB as MongoDB Atlas
+
+    Dev->>API: GET /jobs?status=COMPLETED&task=qa
+    API->>JS: list_jobs(status, task, limit, skip)
+    JS->>DB: find().sort(created_at).skip.limit
+    DB-->>JS: [Job, Job, ...]
+    JS-->>API: liste
+    API-->>Dev: { jobs: [...], total: N }
+
+    Dev->>API: GET /jobs/stats
+    API->>JS: get_stats()
+    JS->>DB: aggregate $group by status + task
+    DB-->>JS: résultats agrégés
+    API-->>Dev: { by_status: {...}, by_task: {...}, total: N }
+
+    Dev->>API: DELETE /jobs/{job_id}
+    API->>JS: delete_job(job_id)
+    JS->>DB: delete_one({ job_id })
+    DB-->>JS: deleted_count
+    API-->>Dev: 204 No Content
+      </div>
+    </div>
+
+    <div class="legend">
+      <div class="legend-item"><div class="dot" style="background:#3b82f6"></div> Requête synchrone</div>
+      <div class="legend-item"><div class="dot" style="background:#10b981"></div> Réponse</div>
+      <div class="legend-item"><div class="dot" style="background:#f59e0b"></div> Tâche de fond async</div>
+    </div>
+
+  </div>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      sequence: {
+        actorMargin: 60,
+        messageMargin: 35,
+        mirrorActors: false,
+        useMaxWidth: true,
+      }
+    });
+
+    function show(id) {
+      document.querySelectorAll('.diagram').forEach(d => d.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+      event.target.classList.add('active');
+
+      // Re-render mermaid in the newly shown tab
+      const el = document.getElementById(id).querySelector('.mermaid');
+      if (!el.getAttribute('data-processed')) {
+        mermaid.run({ nodes: [el] });
+      }
+    }
+  </script>
+
+</body>
+</html>
